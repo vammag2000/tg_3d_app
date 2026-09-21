@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Telegram 3D Studio</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/OBJExporter.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+        body, html { width: 100%; height: 100%; overflow: hidden; background-color: #1e1e1e; font-family: sans-serif; color: white; }
+        #canvas-container { width: 100%; height: 100%; touch-action: none; }
+        
+        /* Панель инструментов (Mobile UI) */
+        .ui-panel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 10;
+        }
+
+        .btn {
+            background: rgba(40, 40, 40, 0.85);
+            color: #fff;
+            border: 1px solid #555;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            backdrop-filter: blur(5px);
+            active: scale(0.95);
+        }
+
+        .btn:active { background: #007acc; }
+
+        /* Панель снизу для трансформаций */
+        .bottom-panel {
+            position: absolute;
+            bottom: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            background: rgba(30, 30, 30, 0.9);
+            padding: 8px 15px;
+            border-radius: 20px;
+            border: 1px solid #444;
+            z-index: 10;
+        }
+
+        .mode-btn {
+            background: transparent;
+            border: none;
+            color: #aaa;
+            font-size: 12px;
+            padding: 6px 10px;
+            border-radius: 6px;
+        }
+
+        .mode-btn.active {
+            background: #007acc;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <!-- Верхнее меню -->
+    <div class="ui-panel">
+        <button class="btn" onclick="addCube()">+ Куб</button>
+        <button class="btn" onclick="addSphere()">+ Сфера</button>
+        <button class="btn" onclick="addCylinder()">+ Цилиндр</button>
+        <button class="btn" style="background: #d9534f;" onclick="deleteSelected()">Удалить</button>
+        <button class="btn" style="background: #5cb85c;" onclick="exportOBJ()">Экспорт .OBJ</button>
+    </div>
+
+    <!-- Нижнее меню переключения режимов (как в Blender) -->
+    <div class="bottom-panel">
+        <button class="mode-btn active" id="btn-translate" onclick="setMode('translate')">Move (G)</button>
+        <button class="mode-btn" id="btn-rotate" onclick="setMode('rotate')">Rotate (R)</button>
+        <button class="mode-btn" id="btn-scale" onclick="setMode('scale')">Scale (S)</button>
+    </div>
+
+    <script>
+        // Инициализация Telegram WebApp
+        const tg = window.Telegram.WebApp;
+        tg.expand(); // Развернуть на весь экран
+
+        // Сцена, Камера, Рендерер
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x282828);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(5, 5, 5);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        container.appendChild(renderer.domElement);
+
+        // Свет
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(10, 20, 15);
+        scene.add(dirLight);
+
+        // Сетка (Grid) как в Blender
+        const gridHelper = new THREE.GridHelper(20, 20, 0x444444, 0x333333);
+        scene.add(gridHelper);
+
+        // Управление камерой (Touch/Orbit Controls)
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // Выбор объектов и трансформации
+        let objects = [];
+        let selectedObject = null;
+        let currentMode = 'translate'; // translate, rotate, scale
+
+        const raycaster = new THREE.Raycaster();
+        const touchPosition = new THREE.Vector2();
+
+        // Добавление мешей
+        const defaultMaterial = () => new THREE.MeshStandardMaterial({ 
+            color: 0x909090, 
+            roughness: 0.4, 
+            metalness: 0.2 
+        });
+
+        function addCube() {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), defaultMaterial());
+            mesh.position.set(0, 0.5, 0);
+            addObject(mesh);
+        }
+
+        function addSphere() {
+            const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.75, 32, 16), defaultMaterial());
+            mesh.position.set(0, 0.75, 0);
+            addObject(mesh);
+        }
+
+        function addCylinder() {
+            const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 1, 32), defaultMaterial());
+            mesh.position.set(0, 0.5, 0);
+            addObject(mesh);
+        }
+
+        function addObject(mesh) {
+            scene.add(mesh);
+            objects.push(mesh);
+            selectObject(mesh);
+        }
+
+        function selectObject(obj) {
+            if (selectedObject) {
+                selectedObject.material.color.setHex(0x909090); // Сброс цвета
+            }
+            selectedObject = obj;
+            if (selectedObject) {
+                selectedObject.material.color.setHex(0xff9900); // Оранжевое выделение Blender
+            }
+        }
+
+        function deleteSelected() {
+            if (selectedObject) {
+                scene.remove(selectedObject);
+                objects = objects.filter(o => o !== selectedObject);
+                selectedObject = null;
+            }
+        }
+
+        // Клик/Тап по объекту
+        window.addEventListener('pointerdown', (e) => {
+            // Игнорируем нажатия на UI
+            if (e.target.tagName === 'BUTTON') return;
+
+            touchPosition.x = (e.clientX / window.innerWidth) * 2 - 1;
+            touchPosition.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(touchPosition, camera);
+            const intersects = raycaster.intersectObjects(objects);
+
+            if (intersects.length > 0) {
+                selectObject(intersects[0].object);
+            }
+        });
+
+        // Смена режима
+        function setMode(mode) {
+            currentMode = mode;
+            document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById(`btn-${mode}`).classList.add('active');
+        }
+
+        // Экспорт модели в формате .OBJ
+        function exportOBJ() {
+            if(objects.length === 0) {
+                tg.showAlert("Сцена пуста!");
+                return;
+            }
+            const exporter = new THREE.OBJExporter();
+            const result = exporter.parse(scene);
+            
+            // Скачивание файла
+            const blob = new Blob([result], { type: 'text/plain' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'model.obj';
+            link.click();
+        }
+
+        // Адаптация под размер экрана смартфона
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Анимация / Рендер
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // Старт с одним кубом
+        addCube();
+        animate();
+    </script>
+</body>
+</html>
